@@ -1,0 +1,65 @@
+{
+  "name": "dsh-plugin-custom-thinking-degree",
+  "version": "0.2.0",
+  "description": "Configure reasoning effort levels for custom DSH model providers from the Models settings page",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-models",
+        "@deepseek-ai/dsh-api-remotes"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "pnpm run clean && pnpm run typecheck && tsc -p tsconfig.build.json && tsdown",
+    "clean": "node scripts/clean.mjs",
+    "gen:comp": "node scripts/generate-component.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint:struct": "node scripts/check-structure.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=3.18.7",
+    "@deepseek-ai/dsh-api-remotes": ">=0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-settings-models": ">=0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-renderer": ">=0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.6-alpha.2",
+    "react": ">=18.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-api-remotes": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-settings-models": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.6-alpha.2",
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "tsdown": "^0.20.3",
+    "typescript": "~5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "license": "MIT"
+}
