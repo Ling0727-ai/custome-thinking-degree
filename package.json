@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-custom-thinking-degree",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Configure reasoning effort levels for custom DSH model providers from the Models settings page",
   "type": "module",
   "main": "lib/index.js",
