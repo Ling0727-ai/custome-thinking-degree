@@ -6,11 +6,12 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { ThinkingDegreeEditor } from '../components/ThinkingDegreeEditor/ThinkingDegreeEditor.tsx'
 import type { ThinkingDegreeEditorOperations } from '../components/ThinkingDegreeEditor/ThinkingDegreeEditor.api.ts'
 import {
-  initializeReasoningEfforts,
-  updateModel,
-  type ModelReasoningConfiguration,
+  updateModels,
+  updateProviderCompat,
+  type ProviderReasoningConfiguration,
   type ProviderModel,
   type ProviderSnapshot,
+  type ThinkingLevel,
 } from '../components/ThinkingDegreeEditor/ThinkingDegreeEditor.data.ts'
 
 const SETTINGS_NAMESPACE = 'llm-pi-ai'
@@ -19,15 +20,10 @@ const STYLE_ID = 'dsh-plugin-custom-thinking-degree'
 const CSS = `
 .ctd-root{border-top:0.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);margin-top:12px;padding-top:12px}
 .ctd-heading{align-items:center;color:var(--dsw-alias-label-primary);display:flex;font-size:13px;font-weight:600;justify-content:space-between;margin-bottom:8px}
-.ctd-muted,.ctd-summary{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400}
-.ctd-model{border-top:0.5px solid var(--dsw-alias-border-l2)}
-.ctd-model:last-child{border-bottom:0.5px solid var(--dsw-alias-border-l2)}
-.ctd-model>summary{align-items:center;cursor:pointer;display:grid;gap:8px;grid-template-columns:minmax(100px,1fr) minmax(120px,2fr);list-style-position:outside;padding:9px 4px}
-.ctd-model>summary:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.ctd-model-name,.ctd-summary{min-width:0;overflow-wrap:anywhere}
-.ctd-model-name{color:var(--dsw-alias-label-primary)}
-.ctd-summary{text-align:right}
+.ctd-muted{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400}
 .ctd-body{padding:4px 4px 12px}
+.ctd-default{align-items:center;display:flex;justify-content:space-between;gap:12px;font-size:12px;margin:12px 0}
+.ctd-default select{min-width:150px;max-width:100%;border:0.5px solid var(--dsw-alias-border-l4);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;padding:6px 8px}
 .ctd-presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .ctd-presets button,.ctd-error button{border:0.5px solid var(--dsw-alias-border-l3);border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer;font:inherit;font-size:12px;padding:5px 9px}
 .ctd-presets button:hover,.ctd-error button:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -46,14 +42,8 @@ const CSS = `
 .ctd-save:disabled{cursor:not-allowed;opacity:.5}
 .ctd-error{align-items:center;color:var(--dsw-alias-state-error-primary);display:flex;font-size:12px;justify-content:space-between;gap:10px;margin:8px 0}
 .ctd-saved{color:var(--dsw-alias-state-success-primary);font-size:12px}
-@media(max-width:560px){.ctd-level{grid-template-columns:1fr}.ctd-model>summary{grid-template-columns:1fr}.ctd-summary{text-align:left}}
+@media(max-width:560px){.ctd-level{grid-template-columns:1fr}.ctd-default{align-items:stretch;flex-direction:column}}
 `
-
-interface ConfigurableProviderEntry {
-  provider: string
-  settingsNs: string
-  declared?: boolean
-}
 
 interface SettingsNamespace {
   ns: string
@@ -79,73 +69,22 @@ function namespaceOf(document: SettingsDocument): SettingsNamespace {
   return namespace
 }
 
-function modelsOf(namespace: SettingsNamespace, provider: string): ProviderModel[] {
+function profileOf(namespace: SettingsNamespace, provider: string): Record<string, unknown> {
   const source = namespace.user ?? namespace.value
-  const providers = record(source)?.['providers']
-  const profile = record(record(providers)?.[provider])
-  const models = profile?.['models']
+  return record(record(record(source)?.['providers'])?.[provider]) ?? {}
+}
+
+function apiOf(profile: Record<string, unknown>, provider: string): string | undefined {
+  return typeof profile['api'] === 'string' ? profile['api'] : provider === 'anthropic' ? 'anthropic-messages' : undefined
+}
+
+function modelsOf(namespace: SettingsNamespace, provider: string): ProviderModel[] {
+  const models = profileOf(namespace, provider)['models']
   if (!Array.isArray(models)) return []
   return models.flatMap((model) => {
     const parsed = record(model)
     return typeof parsed?.['id'] === 'string' ? [parsed as ProviderModel] : []
   })
-}
-
-async function initializeCustomProviderModels(ctx: ClientContext): Promise<void> {
-  const [settingsResponse, directoryResponse] = await Promise.all([
-    ctx.remote.settings.describe(),
-    ctx.remote.llm.listConfigurableProviders(),
-  ])
-  if (!settingsResponse.ok || !directoryResponse.ok || !settingsResponse.value.writable) return
-
-  const document = settingsResponse.value as SettingsDocument
-  const namespace = namespaceOf(document)
-  const declaredProviders = (directoryResponse.value as ConfigurableProviderEntry[])
-    .filter(entry => entry.declared === true && entry.settingsNs === SETTINGS_NAMESPACE)
-    .map(entry => entry.provider)
-  const ops = declaredProviders.flatMap((provider) => {
-    const initialized = initializeReasoningEfforts(modelsOf(namespace, provider))
-    return initialized.changed
-      ? [{ op: 'set' as const, path: ['providers', provider, 'models'], value: initialized.models as never }]
-      : []
-  })
-  if (ops.length === 0) return
-
-  const response = await ctx.remote.settings.mutate(SETTINGS_NAMESPACE, ops, namespace.revision)
-  if (!response.ok && response.error.code !== 'settings/conflict') {
-    console.warn(`[custom-thinking-degree] automatic initialization failed: ${response.error.message}`)
-  }
-}
-
-function installAutomaticInitialization(ctx: ClientContext): () => void {
-  let running = false
-  let rerun = false
-  const schedule = (): void => {
-    if (running) {
-      rerun = true
-      return
-    }
-    running = true
-    void initializeCustomProviderModels(ctx)
-      .catch((error: unknown) => {
-        console.warn('[custom-thinking-degree] automatic initialization failed:', error)
-      })
-      .finally(() => {
-        running = false
-        if (rerun) {
-          rerun = false
-          schedule()
-        }
-      })
-  }
-  schedule()
-  const disposers = [
-    ctx.remote.$on('settings/document-updated', (namespace: string) => {
-      if (namespace === SETTINGS_NAMESPACE) schedule()
-    }),
-    ctx.remote.$on('llm/adapters-updated', schedule),
-  ]
-  return () => { for (const dispose of disposers) dispose() }
 }
 
 function operations(ctx: ClientContext): ThinkingDegreeEditorOperations {
@@ -158,12 +97,19 @@ function operations(ctx: ClientContext): ThinkingDegreeEditorOperations {
     loadProvider: async (provider): Promise<ProviderSnapshot> => {
       const document = await describe()
       const namespace = namespaceOf(document)
-      return { models: modelsOf(namespace, provider), revision: namespace.revision, writable: document.writable }
+      const profile = profileOf(namespace, provider)
+      return {
+        models: modelsOf(namespace, provider),
+        api: apiOf(profile, provider),
+        reasoning: typeof profile['reasoning'] === 'string' ? profile['reasoning'] as ThinkingLevel : undefined,
+        compat: record(profile['compat']) ?? {},
+        revision: namespace.revision,
+        writable: document.writable,
+      }
     },
-    saveModel: async (
+    saveProvider: async (
       provider: string,
-      modelId: string,
-      configuration: ModelReasoningConfiguration,
+      configuration: ProviderReasoningConfiguration,
       expectedRevision: number,
     ) => {
       try {
@@ -173,14 +119,24 @@ function operations(ctx: ClientContext): ThinkingDegreeEditorOperations {
         if (namespace.revision !== expectedRevision) {
           return { ok: false, message: '设置已在其他位置更新，请重新读取后再保存。' }
         }
+        const profile = profileOf(namespace, provider)
         const current = modelsOf(namespace, provider)
-        if (!current.some(model => model.id === modelId)) {
-          return { ok: false, message: `模型 ${modelId} 已不存在。` }
-        }
-        const next = updateModel(current, modelId, configuration)
+        if (current.length === 0) return { ok: false, message: '该分组中没有可配置的模型。' }
+        const api = apiOf(profile, provider)
+        const next = updateModels(current, configuration, api)
+        const compat = updateProviderCompat(record(profile['compat']) ?? {}, configuration, api)
+        const root = ['providers', provider]
         const response = await ctx.remote.settings.mutate(
           SETTINGS_NAMESPACE,
-          [{ op: 'set', path: ['providers', provider, 'models'], value: next as never }],
+          [
+            { op: 'set', path: [...root, 'models'], value: next as never },
+            ...(configuration.reasoning === undefined
+              ? profile['reasoning'] === undefined ? [] : [{ op: 'unset' as const, path: [...root, 'reasoning'] }]
+              : [{ op: 'set' as const, path: [...root, 'reasoning'], value: configuration.reasoning as never }]),
+            ...(Object.keys(compat).length === 0
+              ? profile['compat'] === undefined ? [] : [{ op: 'unset' as const, path: [...root, 'compat'] }]
+              : [{ op: 'set' as const, path: [...root, 'compat'], value: compat as never }]),
+          ],
           expectedRevision,
         )
         return response.ok ? { ok: true } : { ok: false, message: response.error.message }
@@ -194,11 +150,10 @@ function operations(ctx: ClientContext): ThinkingDegreeEditorOperations {
   }
 }
 
-export const inject = ['slots', 'remote', 'remote.settings', 'remote.llm']
+export const inject = ['slots', 'remote', 'remote.settings']
 
 export function apply(ctx: ClientContext): void {
   const editorOperations = operations(ctx)
-  ctx.effect(() => installAutomaticInitialization(ctx), 'custom-thinking-degree: automatic initialization')
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset['plugin'] = STYLE_ID

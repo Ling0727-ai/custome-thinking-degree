@@ -1,23 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ThinkingDegreeEditorController, ThinkingDegreeEditorProps } from './ThinkingDegreeEditor.api.ts'
 import {
-  configurationOf, PRESETS, THINKING_LEVELS, validateConfiguration,
-  type EditorState, type ModelReasoningConfiguration, type ThinkingLevel,
+  configurationOf, isClaudeProtocol, PRESETS, THINKING_LEVELS, validateConfiguration,
+  type EditorState, type ProviderReasoningConfiguration, type ThinkingLevel,
 } from './ThinkingDegreeEditor.data.ts'
 
 const EMPTY_STATE: EditorState = {
-  status: 'loading',
-  models: [],
-  revision: 0,
-  writable: false,
-  drafts: {},
-  error: undefined,
-  savingModel: undefined,
-  savedModel: undefined,
-}
-
-function cloneConfiguration(value: ModelReasoningConfiguration): ModelReasoningConfiguration {
-  return { efforts: value.efforts === undefined ? undefined : { ...value.efforts }, explicitThinking: value.explicitThinking }
+  status: 'loading', models: [], api: undefined, reasoning: undefined, compat: {},
+  revision: 0, writable: false,
+  draft: { efforts: undefined, reasoning: undefined, explicitThinking: false, adaptiveThinking: false },
+  mixedEfforts: false, error: undefined, saving: false, saved: false,
 }
 
 export function useThinkingDegreeEditor(props: ThinkingDegreeEditorProps): ThinkingDegreeEditorController {
@@ -30,21 +22,13 @@ export function useThinkingDegreeEditor(props: ThinkingDegreeEditorProps): Think
     setState(previous => ({ ...previous, status: 'loading', error: undefined }))
     try {
       const snapshot = await operations.loadProvider(providerId)
-      const drafts = Object.fromEntries(snapshot.models.map(model => [model.id, configurationOf(model)]))
+      const { draft, mixedEfforts } = configurationOf(snapshot)
       setState(previous => ({
-        ...previous,
-        ...snapshot,
-        drafts,
-        status: 'ready',
-        error: undefined,
-        savingModel: undefined,
+        ...previous, ...snapshot, draft, mixedEfforts,
+        status: 'ready', error: undefined, saving: false,
       }))
     } catch (error) {
-      setState(previous => ({
-        ...previous,
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      }))
+      setState(previous => ({ ...previous, status: 'error', error: error instanceof Error ? error.message : String(error) }))
     }
   }, [operations, providerId])
 
@@ -54,64 +38,68 @@ export function useThinkingDegreeEditor(props: ThinkingDegreeEditorProps): Think
     return operations.subscribe(() => { void load() })
   }, [load, operations])
 
-  const updateDraft = (modelId: string, mutate: (draft: ModelReasoningConfiguration) => void): void => {
+  const updateDraft = (mutate: (draft: ProviderReasoningConfiguration) => void, changeEfforts = false): void => {
     setState(previous => {
-      const current = previous.drafts[modelId] ?? { efforts: undefined, explicitThinking: false }
-      const draft = cloneConfiguration(current)
+      const draft = { ...previous.draft, efforts: previous.draft.efforts === undefined ? undefined : { ...previous.draft.efforts } }
       mutate(draft)
-      return { ...previous, drafts: { ...previous.drafts, [modelId]: draft }, savedModel: undefined, error: undefined }
+      return { ...previous, draft, mixedEfforts: changeEfforts ? false : previous.mixedEfforts, saved: false, error: undefined }
     })
   }
 
   return {
     state,
     reload: () => { void load() },
-    usePreset: (modelId, preset) => {
-      updateDraft(modelId, (draft) => {
-        const value = preset === 'none'
-          ? { efforts: undefined, explicitThinking: false }
-          : PRESETS[preset]
-        draft.efforts = value.efforts === undefined ? undefined : { ...value.efforts }
-        draft.explicitThinking = value.explicitThinking
-      })
+    usePreset: (preset) => {
+      updateDraft((draft) => {
+        const efforts = PRESETS[preset]
+        draft.efforts = efforts === undefined ? undefined : { ...efforts }
+        if (isClaudeProtocol(state.api)) draft.adaptiveThinking = preset === 'claude' || draft.adaptiveThinking
+        else if (state.api === 'openai-completions') draft.explicitThinking = preset === 'deepseek'
+        if (draft.reasoning !== undefined && efforts !== undefined && !Object.hasOwn(efforts, draft.reasoning)) {
+          draft.reasoning = undefined
+        }
+      }, true)
     },
-    toggleLevel: (modelId, rawLevel, enabled) => {
+    toggleLevel: (rawLevel, enabled) => {
       const level = rawLevel as ThinkingLevel
       if (!THINKING_LEVELS.includes(level)) return
-      updateDraft(modelId, (draft) => {
+      updateDraft((draft) => {
         const efforts = { ...(draft.efforts ?? {}) }
         if (enabled) efforts[level] = level === 'off' ? null : level
         else delete efforts[level]
         draft.efforts = efforts
-      })
+        if (!enabled && draft.reasoning === level) draft.reasoning = undefined
+      }, true)
     },
-    setWireValue: (modelId, rawLevel, value) => {
+    setWireValue: (rawLevel, value) => {
       const level = rawLevel as ThinkingLevel
       if (!THINKING_LEVELS.includes(level)) return
-      updateDraft(modelId, (draft) => {
+      updateDraft((draft) => {
         draft.efforts = { ...(draft.efforts ?? {}), [level]: level === 'off' && value === '' ? null : value }
-      })
+      }, true)
     },
-    setExplicitThinking: (modelId, enabled) => {
-      updateDraft(modelId, (draft) => { draft.explicitThinking = enabled })
+    setReasoning: (value) => {
+      updateDraft((draft) => { draft.reasoning = value === '' ? undefined : value as ThinkingLevel })
     },
-    save: (modelId) => {
-      const draft = state.drafts[modelId]
-      if (draft === undefined || providerId === undefined || operations === undefined) return
-      const error = validateConfiguration(draft)
+    setExplicitThinking: enabled => { updateDraft(draft => { draft.explicitThinking = enabled }) },
+    setAdaptiveThinking: enabled => { updateDraft(draft => { draft.adaptiveThinking = enabled }) },
+    save: () => {
+      if (providerId === undefined || operations === undefined || state.mixedEfforts) return
+      const draft = state.draft
+      const error = validateConfiguration(draft, state.api)
       if (error !== undefined) {
-        setState(previous => ({ ...previous, error, savedModel: undefined }))
+        setState(previous => ({ ...previous, error, saved: false }))
         return
       }
-      setState(previous => ({ ...previous, savingModel: modelId, error: undefined, savedModel: undefined }))
-      void operations.saveModel(providerId, modelId, draft, state.revision).then((result) => {
+      setState(previous => ({ ...previous, saving: true, error: undefined, saved: false }))
+      void operations.saveProvider(providerId, draft, state.revision).then((result) => {
         if (!result.ok) {
-          setState(previous => ({ ...previous, savingModel: undefined, error: result.message }))
+          setState(previous => ({ ...previous, saving: false, error: result.message }))
           return
         }
-        void load().then(() => {
-          setState(previous => ({ ...previous, savedModel: modelId }))
-        })
+        void load().then(() => { setState(previous => ({ ...previous, saved: true })) })
+      }).catch((cause: unknown) => {
+        setState(previous => ({ ...previous, saving: false, error: cause instanceof Error ? cause.message : String(cause) }))
       })
     },
   }

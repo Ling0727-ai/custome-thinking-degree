@@ -1,59 +1,62 @@
 import { describe, expect, it } from 'vitest'
 import {
-  configurationOf, initializeReasoningEfforts, PRESETS, updateModel, validateConfiguration,
+  configurationOf, PRESETS, updateModels, updateProviderCompat, validateConfiguration,
+  type ProviderReasoningConfiguration, type ProviderSnapshot,
 } from '../src/components/ThinkingDegreeEditor/ThinkingDegreeEditor.data.ts'
 
-describe('thinking degree model configuration', () => {
-  it('applies a preset without losing unrelated model fields', () => {
-    const models = [{ id: 'reasoner', name: 'Reasoner', contextWindow: 128000, compat: { maxTokensField: 'max_tokens' } }]
-    const [updated] = updateModel(models, 'reasoner', PRESETS.deepseek)
-    expect(updated).toMatchObject({
-      id: 'reasoner',
-      name: 'Reasoner',
-      contextWindow: 128000,
-      reasoningEfforts: { off: null, low: 'low', high: 'high', max: 'max' },
-      compat: { maxTokensField: 'max_tokens', thinkingFormat: 'deepseek' },
-    })
+const config = (overrides: Partial<ProviderReasoningConfiguration> = {}): ProviderReasoningConfiguration => ({
+  efforts: PRESETS.claude, reasoning: 'high', explicitThinking: false, adaptiveThinking: true, ...overrides,
+})
+
+function snapshot(overrides: Partial<ProviderSnapshot> = {}): ProviderSnapshot {
+  return {
+    api: 'anthropic-messages', models: [{ id: 'claude-opus-5-5' }], compat: {},
+    reasoning: undefined, revision: 1, writable: true, ...overrides,
+  }
+}
+
+describe('provider-level thinking configuration', () => {
+  it('uses an independent Claude mapping and adaptive thinking for Messages models', () => {
+    const models = [{ id: 'claude-opus-5-5', contextWindow: 128000 }, { id: 'claude-sonnet-5', name: 'Sonnet' }]
+    const updated = updateModels(models, config(), 'anthropic-messages')
+    expect(updated).toEqual(models.map(model => ({ ...model, reasoningEfforts: PRESETS.claude })))
+    expect(updated[0]?.reasoningEfforts).not.toHaveProperty('xhigh')
+    expect(updateProviderCompat({ supportsTemperature: false }, config(), 'anthropic-messages'))
+      .toEqual({ supportsTemperature: false, forceAdaptiveThinking: true })
   })
 
-  it('restores inheritance and removes only the plugin-owned compat field', () => {
-    const [updated] = updateModel([{
-      id: 'reasoner',
-      reasoningEfforts: { high: 'ultra' },
-      compat: { thinkingFormat: 'deepseek', supportsDeveloperRole: false },
-    }], 'reasoner', { efforts: undefined, explicitThinking: false })
-    expect(updated).toEqual({ id: 'reasoner', compat: { supportsDeveloperRole: false } })
-    expect(configurationOf(updated!)).toEqual({ efforts: undefined, explicitThinking: false })
+  it('replaces a legacy OpenAI-style map on Claude without carrying DeepSeek switches', () => {
+    const legacy = { off: null, minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' }
+    expect(configurationOf(snapshot({ models: [{ id: 'claude-opus-5-5', reasoningEfforts: legacy }] })).draft.efforts)
+      .toEqual(PRESETS.claude)
+    expect(updateModels([{ id: 'claude-opus-5-5', compat: { forceAdaptiveThinking: false, allowEmptySignature: true } }], config(), 'anthropic-messages')[0]?.compat)
+      .toEqual({ allowEmptySignature: true })
   })
 
-  it('initializes only models without an explicit reasoning declaration', () => {
-    const first = initializeReasoningEfforts([
-      { id: 'new-model', name: 'New Model' },
-      { id: 'custom', reasoningEfforts: { high: 'ultra' } },
-      { id: 'disabled', reasoningEfforts: false },
-    ])
-    expect(first.changed).toBe(true)
-    expect(first.models[0]?.reasoningEfforts).toEqual({
-      off: null,
-      minimal: 'minimal',
-      low: 'low',
-      medium: 'medium',
-      high: 'high',
-      xhigh: 'xhigh',
-      max: 'max',
-    })
-    expect(first.models[1]?.reasoningEfforts).toEqual({ high: 'ultra' })
-    expect(first.models[2]?.reasoningEfforts).toBe(false)
-
-    const second = initializeReasoningEfforts(first.models)
-    expect(second.changed).toBe(false)
-    expect(second.models).toEqual(first.models)
+  it('keeps OpenAI completions switches separate and preserves unrelated fields', () => {
+    const draft = config({ efforts: PRESETS.deepseek, explicitThinking: true, adaptiveThinking: false })
+    const [updated] = updateModels([{ id: 'reasoner', compat: { supportsDeveloperRole: false } }], draft, 'openai-completions')
+    expect(updated).toMatchObject({ reasoningEfforts: PRESETS.deepseek, compat: { supportsDeveloperRole: false, thinkingFormat: 'deepseek' } })
+    expect(updateProviderCompat({ supportsReasoningEffort: false }, draft, 'openai-completions'))
+      .toEqual({ supportsReasoningEffort: false, thinkingFormat: 'deepseek' })
+    expect(updateProviderCompat({}, draft, 'anthropic-messages')).toEqual({ forceAdaptiveThinking: false })
   })
 
-  it('rejects empty or off-only configurations', () => {
-    expect(validateConfiguration({ efforts: {}, explicitThinking: false })).toContain('至少启用')
-    expect(validateConfiguration({ efforts: { off: null }, explicitThinking: false })).toContain('非 off')
-    expect(validateConfiguration({ efforts: { high: '' }, explicitThinking: false })).toContain('不能为空')
-    expect(validateConfiguration(PRESETS.general)).toBeUndefined()
+  it('supports inheriting catalog capabilities and requires a preset for mixed model mappings', () => {
+    const mixed = configurationOf(snapshot({ models: [
+      { id: 'a', reasoningEfforts: { high: 'high' } }, { id: 'b', reasoningEfforts: { max: 'max' } },
+    ] }))
+    expect(mixed.mixedEfforts).toBe(true)
+    expect(configurationOf(snapshot({ models: [{ id: 'disabled', reasoningEfforts: false }] })).mixedEfforts).toBe(true)
+    const [updated] = updateModels([{ id: 'a', reasoningEfforts: { high: 'high' }, compat: { allowEmptySignature: true } }],
+      config({ efforts: undefined, reasoning: undefined }), 'anthropic-messages')
+    expect(updated).toEqual({ id: 'a', compat: { allowEmptySignature: true } })
+  })
+
+  it('rejects invalid Claude wire values and unavailable default strengths', () => {
+    expect(validateConfiguration(config({ efforts: { high: 'xhigh' } }), 'anthropic-messages')).toContain('Claude Messages')
+    expect(validateConfiguration(config({ efforts: { off: null } }), 'anthropic-messages')).toContain('非 off')
+    expect(validateConfiguration(config({ efforts: { high: 'high' }, reasoning: 'max' }), 'anthropic-messages')).toContain('默认思考等级')
+    expect(validateConfiguration(config(), 'anthropic-messages')).toBeUndefined()
   })
 })

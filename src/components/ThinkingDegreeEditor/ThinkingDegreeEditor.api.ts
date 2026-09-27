@@ -1,13 +1,10 @@
-import type {
-  ModelReasoningConfiguration, ProviderModel, ProviderSnapshot,
-} from './ThinkingDegreeEditor.data.ts'
+import type { ProviderReasoningConfiguration, ProviderSnapshot } from './ThinkingDegreeEditor.data.ts'
 
 export interface ThinkingDegreeEditorOperations {
   loadProvider(provider: string): Promise<ProviderSnapshot>
-  saveModel(
+  saveProvider(
     provider: string,
-    modelId: string,
-    configuration: ModelReasoningConfiguration,
+    configuration: ProviderReasoningConfiguration,
     expectedRevision: number,
   ): Promise<{ ok: true } | { ok: false; message: string }>
   subscribe(listener: () => void): () => void
@@ -23,20 +20,13 @@ export interface ThinkingDegreeEditorProps {
 }
 
 export interface ThinkingDegreeEditorController {
-  state: {
-    status: 'loading' | 'ready' | 'error'
-    error: string | undefined
-    models: ProviderModel[]
-    revision: number
-    writable: boolean
-    drafts: Record<string, ModelReasoningConfiguration>
-    savingModel: string | undefined
-    savedModel: string | undefined
-  }
+  state: import('./ThinkingDegreeEditor.data.ts').EditorState
   reload(): void
-  usePreset(modelId: string, preset: 'general' | 'openai' | 'deepseek' | 'none'): void
-  toggleLevel(modelId: string, level: string, enabled: boolean): void
-  setWireValue(modelId: string, level: string, value: string): void
-  setExplicitThinking(modelId: string, enabled: boolean): void
-  save(modelId: string): void
+  usePreset(preset: import('./ThinkingDegreeEditor.data.ts').Preset): void
+  toggleLevel(level: string, enabled: boolean): void
+  setWireValue(level: string, value: string): void
+  setReasoning(level: string): void
+  setExplicitThinking(enabled: boolean): void
+  setAdaptiveThinking(enabled: boolean): void
+  save(): void
 }
