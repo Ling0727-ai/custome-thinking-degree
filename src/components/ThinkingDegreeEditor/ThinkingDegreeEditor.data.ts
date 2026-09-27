@@ -1,6 +1,6 @@
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
-export const CLAUDE_LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const
-export const CLAUDE_WIRE_VALUES = ['low', 'medium', 'high', 'max'] as const
+/** Suggested Claude `output_config.effort` values; any other string is still sent as-is. */
+export const CLAUDE_EFFORT_SUGGESTIONS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 export type ThinkingLevel = typeof THINKING_LEVELS[number]
 export type ReasoningEfforts = Partial<Record<ThinkingLevel, string | null>>
@@ -71,6 +71,32 @@ export function configurationOf(snapshot: ProviderSnapshot): { draft: ProviderRe
   }
 }
 
+const LEGACY_AUTO_EFFORTS = { off: null, minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' }
+
+/**
+ * Claude default: adaptive thinking with `output_config.effort`, unless the user
+ * explicitly turned it off. Also replaces the legacy 7-level map this plugin
+ * used to write automatically, which sends invalid efforts to Claude.
+ * @returns the patched profile parts, or undefined when nothing needs to change.
+ */
+export function claudeDefaults(
+  models: readonly ProviderModel[],
+  compat: Record<string, unknown>,
+): { models: ProviderModel[] | undefined; compat: Record<string, unknown> | undefined } | undefined {
+  const nextCompat = compat['forceAdaptiveThinking'] === undefined ? { ...compat, forceAdaptiveThinking: true } : undefined
+  let modelsChanged = false
+  const nextModels = models.map((model) => {
+    const efforts = model.reasoningEfforts
+    if (efforts === undefined || efforts === false) return model
+    const same = THINKING_LEVELS.every(level => efforts[level] === LEGACY_AUTO_EFFORTS[level])
+    if (!same) return model
+    modelsChanged = true
+    return { ...model, reasoningEfforts: { ...PRESETS.claude } }
+  })
+  if (nextCompat === undefined && !modelsChanged) return undefined
+  return { models: modelsChanged ? nextModels : undefined, compat: nextCompat }
+}
+
 export function updateModels(
   models: readonly ProviderModel[],
   configuration: ProviderReasoningConfiguration,
@@ -115,9 +141,7 @@ export function validateConfiguration(configuration: ProviderReasoningConfigurat
   for (const [level, value] of entries) {
     if (level !== 'off' && (typeof value !== 'string' || value.trim().length === 0)) return `${level} 的发送值不能为空。`
     if (typeof value === 'string' && value.length === 0) return `${level} 的发送值不能为空字符串。`
-    if (isClaudeProtocol(api) && (level === 'minimal' || level === 'xhigh' || (level !== 'off' && !CLAUDE_WIRE_VALUES.includes(value as typeof CLAUDE_WIRE_VALUES[number])))) {
-      return 'Claude Messages 仅支持 low、medium、high、max 的统一等级映射。'
-    }
+    if (isClaudeProtocol(api) && level === 'off' && value !== null) return 'Claude 的 off 不发送 effort，请留空。'
   }
   if (configuration.reasoning !== undefined && !Object.hasOwn(configuration.efforts, configuration.reasoning)) {
     return '默认思考等级必须在启用的等级中。'

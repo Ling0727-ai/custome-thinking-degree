@@ -6,6 +6,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { ThinkingDegreeEditor } from '../components/ThinkingDegreeEditor/ThinkingDegreeEditor.tsx'
 import type { ThinkingDegreeEditorOperations } from '../components/ThinkingDegreeEditor/ThinkingDegreeEditor.api.ts'
 import {
+  claudeDefaults,
+  isClaudeProtocol,
   updateModels,
   updateProviderCompat,
   type ProviderReasoningConfiguration,
@@ -150,10 +152,46 @@ function operations(ctx: ClientContext): ThinkingDegreeEditorOperations {
   }
 }
 
+/** Write the Claude default (adaptive thinking + output_config.effort) to every Claude group that lacks it. */
+async function applyClaudeDefaults(ctx: ClientContext): Promise<void> {
+  const response = await ctx.remote.settings.describe()
+  if (!response.ok) return
+  const document = response.value as SettingsDocument
+  if (!document.writable) return
+  const namespace = namespaceOf(document)
+  const providers = record(record(namespace.user ?? namespace.value)?.['providers']) ?? {}
+  const ops = Object.keys(providers).flatMap((provider) => {
+    const profile = profileOf(namespace, provider)
+    if (!isClaudeProtocol(apiOf(profile, provider))) return []
+    const patch = claudeDefaults(modelsOf(namespace, provider), record(profile['compat']) ?? {})
+    if (patch === undefined) return []
+    return [
+      ...(patch.models === undefined ? [] : [{ op: 'set' as const, path: ['providers', provider, 'models'], value: patch.models as never }]),
+      ...(patch.compat === undefined ? [] : [{ op: 'set' as const, path: ['providers', provider, 'compat'], value: patch.compat as never }]),
+    ]
+  })
+  if (ops.length === 0) return
+  const result = await ctx.remote.settings.mutate(SETTINGS_NAMESPACE, ops, namespace.revision)
+  if (!result.ok && result.error.code !== 'settings/conflict') {
+    console.warn(`[custom-thinking-degree] Claude defaults failed: ${result.error.message}`)
+  }
+}
+
 export const inject = ['slots', 'remote', 'remote.settings']
 
 export function apply(ctx: ClientContext): void {
   const editorOperations = operations(ctx)
+  ctx.effect(() => {
+    const run = (): void => {
+      void applyClaudeDefaults(ctx).catch((error: unknown) => {
+        console.warn('[custom-thinking-degree] Claude defaults failed:', error)
+      })
+    }
+    run()
+    return ctx.remote.$on('settings/document-updated', (namespace: string) => {
+      if (namespace === SETTINGS_NAMESPACE) run()
+    })
+  }, 'custom-thinking-degree: Claude defaults')
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset['plugin'] = STYLE_ID

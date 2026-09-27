@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { ThinkingDegreeEditorProps } from './ThinkingDegreeEditor.api.ts'
-import { CLAUDE_LEVELS, CLAUDE_WIRE_VALUES, isClaudeProtocol, THINKING_LEVELS } from './ThinkingDegreeEditor.data.ts'
+import { CLAUDE_EFFORT_SUGGESTIONS, isClaudeProtocol, THINKING_LEVELS } from './ThinkingDegreeEditor.data.ts'
 import { useThinkingDegreeEditor } from './ThinkingDegreeEditor.ts'
 
 export function ThinkingDegreeEditor(props: ThinkingDegreeEditorProps): ReactNode {
@@ -8,7 +8,7 @@ export function ThinkingDegreeEditor(props: ThinkingDegreeEditorProps): ReactNod
   const { state } = controller
   if (props.provider === undefined || props.operations === undefined) return null
   const claude = isClaudeProtocol(state.api)
-  const levels = claude ? CLAUDE_LEVELS : THINKING_LEVELS
+  const levels = THINKING_LEVELS
   const enabled = state.draft.efforts ?? {}
 
   return (
@@ -59,20 +59,20 @@ export function ThinkingDegreeEditor(props: ThinkingDegreeEditorProps): ReactNod
                     <input type="checkbox" checked={active} onChange={event => { controller.toggleLevel(level, event.currentTarget.checked) }} />
                     <span>{level}</span>
                   </label>
-                  {claude && level !== 'off' ? (
-                    <select className="ctd-input" aria-label={`${level} Claude effort`} disabled={!active} value={wireValue ?? level}
-                      onChange={event => { controller.setWireValue(level, event.currentTarget.value) }}>
-                      {CLAUDE_WIRE_VALUES.map(value => <option key={value} value={value}>{value}</option>)}
-                    </select>
-                  ) : (
-                    <input className="ctd-input" type="text" aria-label={`${level} 发送值`} disabled={!active || claude}
-                      value={wireValue ?? ''} placeholder={level === 'off' ? '留空表示不发送' : level}
-                      onChange={event => { controller.setWireValue(level, event.currentTarget.value) }} />
-                  )}
+                  <input className="ctd-input" type="text" aria-label={`${level} 发送值`}
+                    disabled={!active || (claude && level === 'off')}
+                    list={claude && level !== 'off' ? 'ctd-claude-efforts' : undefined}
+                    value={wireValue ?? ''} placeholder={level === 'off' ? '留空表示不发送' : level}
+                    onChange={event => { controller.setWireValue(level, event.currentTarget.value) }} />
                 </div>
               )
             })}
           </div>
+          {claude ? (
+            <datalist id="ctd-claude-efforts">
+              {CLAUDE_EFFORT_SUGGESTIONS.map(value => <option key={value} value={value} />)}
+            </datalist>
+          ) : null}
           {claude ? (
             <label className="ctd-thinking-toggle">
               <input type="checkbox" checked={state.draft.adaptiveThinking}

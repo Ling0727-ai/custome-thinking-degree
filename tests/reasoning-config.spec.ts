@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  configurationOf, PRESETS, updateModels, updateProviderCompat, validateConfiguration,
+  claudeDefaults, configurationOf, PRESETS, updateModels, updateProviderCompat, validateConfiguration,
   type ProviderReasoningConfiguration, type ProviderSnapshot,
 } from '../src/components/ThinkingDegreeEditor/ThinkingDegreeEditor.data.ts'
 
@@ -53,8 +53,21 @@ describe('provider-level thinking configuration', () => {
     expect(updated).toEqual({ id: 'a', compat: { allowEmptySignature: true } })
   })
 
-  it('rejects invalid Claude wire values and unavailable default strengths', () => {
-    expect(validateConfiguration(config({ efforts: { high: 'xhigh' } }), 'anthropic-messages')).toContain('Claude Messages')
+  it('defaults Claude groups to adaptive thinking and migrates the legacy map', () => {
+    const legacy = { off: null, minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' }
+    const patch = claudeDefaults([{ id: 'a', reasoningEfforts: legacy }, { id: 'b', reasoningEfforts: { high: 'custom' } }], { supportsTemperature: false })
+    expect(patch?.compat).toEqual({ supportsTemperature: false, forceAdaptiveThinking: true })
+    expect(patch?.models?.[0]?.reasoningEfforts).toEqual(PRESETS.claude)
+    expect(patch?.models?.[1]?.reasoningEfforts).toEqual({ high: 'custom' })
+    expect(claudeDefaults([{ id: 'a' }], { forceAdaptiveThinking: false })).toBeUndefined()
+    expect(configurationOf(snapshot()).draft.adaptiveThinking).toBe(true)
+  })
+
+  it('allows custom Claude effort values and rejects unavailable default strengths', () => {
+    const custom = config({ efforts: { off: null, minimal: 'low', high: 'xhigh', xhigh: 'max', max: 'custom-effort' }, reasoning: 'xhigh' })
+    expect(validateConfiguration(custom, 'anthropic-messages')).toBeUndefined()
+    expect(updateModels([{ id: 'claude-opus-5-5' }], custom, 'anthropic-messages')[0]?.reasoningEfforts).toEqual(custom.efforts)
+    expect(validateConfiguration(config({ efforts: { off: 'disabled', high: 'high' } }), 'anthropic-messages')).toContain('off')
     expect(validateConfiguration(config({ efforts: { off: null } }), 'anthropic-messages')).toContain('非 off')
     expect(validateConfiguration(config({ efforts: { high: 'high' }, reasoning: 'max' }), 'anthropic-messages')).toContain('默认思考等级')
     expect(validateConfiguration(config(), 'anthropic-messages')).toBeUndefined()
